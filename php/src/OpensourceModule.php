@@ -457,11 +457,19 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
             : new CurlStripeApi((string) (getenv('STRIPE_SECRET_KEY') ?: ''));
     }
 
+    /**
+     * The signing secret, from the settings store only. No env fallback: a new
+     * env var would need a decision in the gateway's installer, and the panel
+     * is where Einstellungen → Zahlungen asks for it anyway.
+     */
     private static function webhookSecret(ContainerInterface $c): string
     {
-        $store = $c->has(SettingsStore::class) ? $c->get(SettingsStore::class) : null;
-        $secret = $store instanceof SettingsStore ? (string) ($store->getSecret(self::NS, 'stripe_webhook_secret') ?? '') : '';
-        return $secret !== '' ? $secret : (string) (getenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET') ?: '');
+        try {
+            $store = $c->has(SettingsStore::class) ? $c->get(SettingsStore::class) : null;
+            return $store instanceof SettingsStore ? (string) ($store->getSecret(self::NS, 'stripe_webhook_secret') ?? '') : '';
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     private static function connections(ContainerInterface $c): ?SiteConnections

@@ -11,6 +11,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Opensource\OpensourceModule;
 use Tds\Ext\Opensource\Tests\Support\TestContainer;
 use Tds\Frontend\Contract\ModuleRegistry;
+use Tds\Frontend\Contract\SettingsStore;
 use Tds\Frontend\Contract\Stripe\StripeApi;
 use Tds\Frontend\Contract\UserContext;
 
@@ -43,11 +44,12 @@ final class OpensourceModuleTest extends TestCase
             ('secret', 'Secret', NULL, 'https://example.org', 'MIT', NULL, 0, 0)");
     }
 
-    private function app(UserContext $user, ?StripeApi $stripe = null): App
+    private function app(UserContext $user, ?StripeApi $stripe = null, string $webhookSecret = ''): App
     {
         $container = new TestContainer([
             PDO::class => $this->pdo,
             UserContext::class => $user,
+            SettingsStore::class => self::settings($webhookSecret),
         ]);
         if ($stripe !== null) {
             $container->set(StripeApi::class, $stripe);
@@ -57,6 +59,38 @@ final class OpensourceModuleTest extends TestCase
         $app->addBodyParsingMiddleware();
         (new ModuleRegistry([new OpensourceModule()]))->registerAll($app);
         return $app;
+    }
+
+    private static function settings(string $webhookSecret): SettingsStore
+    {
+        return new class ($webhookSecret) implements SettingsStore {
+            public function __construct(private readonly string $secret)
+            {
+            }
+
+            public function get(string $namespace, string $key, ?string $default = null): ?string
+            {
+                return $default;
+            }
+
+            public function getSecret(string $namespace, string $key): ?string
+            {
+                return $namespace === 'opensource' && $key === 'stripe_webhook_secret' && $this->secret !== '' ? $this->secret : null;
+            }
+
+            public function set(string $namespace, string $key, string $value, bool $secret): void
+            {
+            }
+
+            public function delete(string $namespace, string $key): void
+            {
+            }
+
+            public function allMasked(string $namespace): array
+            {
+                return [];
+            }
+        };
     }
 
     private function user(bool $auth, array $perms = []): UserContext
@@ -173,16 +207,11 @@ final class OpensourceModuleTest extends TestCase
 
     public function testWebhookWithoutSecretOrSignatureIsRefused(): void
     {
-        putenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET');
-        $app = $this->app($this->user(false), $this->stripe(true));
-        self::assertSame(503, $app->handle(self::post('/opensource/stripe-webhook', []))->getStatusCode());
+        $unset = $this->app($this->user(false), $this->stripe(true));
+        self::assertSame(503, $unset->handle(self::post('/opensource/stripe-webhook', []))->getStatusCode());
 
-        putenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET=whsec_test');
-        try {
-            self::assertSame(400, $app->handle(self::post('/opensource/stripe-webhook', ['type' => 'x']))->getStatusCode());
-        } finally {
-            putenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET');
-        }
+        $set = $this->app($this->user(false), $this->stripe(true), 'whsec_test');
+        self::assertSame(400, $set->handle(self::post('/opensource/stripe-webhook', ['type' => 'x']))->getStatusCode());
     }
 
     public function testASignedPaidEventSettlesTheDonation(): void
@@ -201,12 +230,7 @@ final class OpensourceModuleTest extends TestCase
             ->withHeader('Stripe-Signature', $signature);
         $request->getBody()->write($payload);
 
-        putenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET=whsec_test');
-        try {
-            $response = $this->app($this->user(false), $this->stripe(true))->handle($request);
-        } finally {
-            putenv('OPENSOURCE_STRIPE_WEBHOOK_SECRET');
-        }
+        $response = $this->app($this->user(false), $this->stripe(true), 'whsec_test')->handle($request);
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('paid', $this->pdo->query("SELECT status FROM oss_donation WHERE stripe_session_id = 'cs_paid'")->fetchColumn());
     }

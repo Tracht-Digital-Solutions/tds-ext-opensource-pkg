@@ -28,7 +28,7 @@ final class ClientIp
         if ($ip === '') {
             return null;
         }
-        $salt = (string) (getenv('OPENSOURCE_RATE_SALT') ?: getenv('SETTINGS_ENCRYPTION_KEY') ?: 'tds-opensource');
+        $salt = (string) (getenv('SETTINGS_ENCRYPTION_KEY') ?: 'tds-opensource');
         return hash('sha256', $salt . '|' . $ip);
     }
 }

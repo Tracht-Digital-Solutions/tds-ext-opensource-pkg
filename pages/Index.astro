@@ -1,0 +1,15 @@
+---
+// Open Source — the extension's screen. Everything interactive is in the island.
+import ProjectsScreen from "../islands/ProjectsScreen.tsx";
+---
+
+<section class="tds-page">
+  <div class="tds-page__head">
+    <h1 class="tds-page__title">Open Source</h1>
+    <p class="tds-page__lede">
+      Projekte mit eigener Webseite. Hier stehen Version, Download und Spenden; die Texte
+      liegen in der jeweiligen Site.
+    </p>
+  </div>
+  <ProjectsScreen client:load />
+</section>

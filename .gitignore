@@ -1,0 +1,24 @@
+node_modules/
+dist/
+vendor/
+*.log
+.DS_Store
+.vscode/
+.idea/
+*.tsbuildinfo
+.phpunit.cache/
+composer.lock
+
+# Windows-generated npm lockfile is win32-only; CI uses npm install --no-package-lock
+package-lock.json
+
+# Windows OS files
+Thumbs.db
+Desktop.ini
+
+# Editor backups
+*.swp
+*~
+
+# Local agent state
+.claude/

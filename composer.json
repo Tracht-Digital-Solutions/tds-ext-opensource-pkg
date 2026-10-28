@@ -1,0 +1,39 @@
+{
+  "name": "tracht-digital-solutions/tds-ext-opensource",
+  "description": "Open-source projects and donations (backend Module) for the TDS frontend API.",
+  "type": "library",
+  "license": "proprietary",
+  "version": "0.1.0",
+  "require": {
+    "php": ">=8.1",
+    "slim/slim": "^4.13",
+    "tracht-digital-solutions/tds-frontend-contract": "^1.13"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5",
+    "slim/psr7": "^1.6"
+  },
+  "repositories": [
+    {
+      "type": "vcs",
+      "url": "https://github.com/Tracht-Digital-Solutions/tds-frontend-contract-pkg"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Tds\\Ext\\Opensource\\": "php/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tds\\Ext\\Opensource\\Tests\\": "php/tests/"
+    }
+  },
+  "config": {
+    "sort-packages": true,
+    "preferred-install": "dist"
+  },
+  "scripts": {
+    "test": "phpunit"
+  }
+}

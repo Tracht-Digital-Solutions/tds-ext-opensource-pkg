@@ -1,0 +1,10 @@
+---
+// Dashboard widget shell. HYDRATION: `client:visible`, not `client:load` — the
+// dashboard renders a dozen widgets, and switched-off ones never intersect.
+import WidgetBody from "../islands/WidgetBody.tsx";
+---
+
+<article class="tds-widget">
+  <h3 class="tds-widget__title">Spenden</h3>
+  <WidgetBody client:visible />
+</article>

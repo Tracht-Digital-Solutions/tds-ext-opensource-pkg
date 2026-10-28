@@ -1,0 +1,155 @@
+name: Build (reusable)
+
+# Single source of truth for this extension. Called by ci.yml (PR gate, no
+# publish), dev.yml (prerelease -> @dev) and release.yml (version bump ->
+# @latest + push tag). Dual package: the TS half publishes to GitHub Packages;
+# the PHP half is a Composer package consumed via VCS, so its release IS the git
+# tag pushed here. Both test suites gate every run.
+#
+# NB NPM_TOKEN is set from PACKAGE_TOKEN (needs read:packages) so `npm install`
+# can pull @tracht-digital-solutions/tds-frontend-contract from GitHub Packages via
+# the committed .npmrc; the same token (write+delete:packages) publishes.
+
+on:
+  workflow_call:
+    inputs:
+      publish_tag:
+        description: "none = build only (CI); 'dev' = prerelease @dev; 'latest' = real release."
+        required: false
+        type: string
+        default: none
+      bump:
+        description: Version bump for a 'latest' release (patch | minor | major).
+        required: false
+        type: string
+        default: patch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NPM_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PACKAGE_TOKEN }}
+
+      # --- PHP half: the Module + its route ----------------------------------
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: composer:v2
+
+      - name: Composer validate
+        run: composer validate --no-check-publish --no-check-lock
+
+      - name: Composer install
+        # Resolves tds-frontend-contract from its public VCS repo (the local path
+        # repo in composer.json is a dev convenience and is absent in CI).
+        uses: ramsey/composer-install@v3
+
+      - name: PHP syntax check
+        run: |
+          find php/src php/tests -name '*.php' -print0 \
+            | xargs -0 -n1 -P4 php -l > /dev/null
+
+      - name: PHPUnit
+        run: composer test
+
+      # --- TS half: the manifest ---------------------------------------------
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Pin npm
+        # Node 22 ships npm 10, whose arborist crashes with
+        # "Cannot read properties of null (reading 'edgesOut')" on some
+        # dependency graphs. Astro 7.3.0 (2026-09-03) introduced one, and this
+        # package floats on `astro@>=6` — an unbounded floor, so a lockless
+        # install resolves straight into it.
+        #
+        # It bites here and not everywhere because `--no-package-lock` below
+        # re-resolves every range on every run: a publish by any dependency can
+        # change the graph between two builds of the SAME commit, so the failure
+        # arrives on a green commit that touched no manifest. That is the trade
+        # for a lockfile this repo cannot use; the cost is that the npm doing
+        # the resolving has to be current.
+        run: npm install -g npm@11
+
+      - name: Install
+        # `npm install --no-package-lock` (not `npm ci`): a Windows-generated
+        # lockfile pins only win32 optional binaries and breaks the Linux
+        # runner (npm bug #4828). Auth via the committed .npmrc + NPM_TOKEN.
+        run: npm install --no-package-lock
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Lint primitives
+        # Extensions ship no CSS of their own, so a control without the
+        # shared class is unstyled — and an unclassed <input> is INVISIBLE,
+        # because Tailwind preflight zeroes borders. 86 buttons and 105
+        # controls had drifted across the packages before this step existed.
+        run: npm run lint:primitives
+
+      - name: Test (vitest)
+        # The suites in this repo gated nothing until 2026-08-25: CI ran
+        # type-check, lint:primitives and build, and the tests only ever ran on
+        # somebody's machine. That includes the ApiDocSource parity test, whose
+        # whole job is to fail when a route gains or loses documentation.
+        run: npm run test:run
+
+      - name: Build
+        run: npm run build
+
+      # --- Publish -----------------------------------------------------------
+      - name: Publish prerelease (@dev)
+        if: ${{ inputs.publish_tag == 'dev' }}
+        run: |
+          base=$(node -p "require('./package.json').version")
+          npm version "${base}-dev.${{ github.run_number }}" --no-git-tag-version
+          npm publish --tag dev
+
+      - name: Release (@latest) + push tag
+        # Bumps package.json AND composer.json in lockstep (one release),
+        # commits, tags, publishes npm, pushes the tag (= the Composer release ref).
+        if: ${{ inputs.publish_tag == 'latest' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          new=$(npm version ${{ inputs.bump }} --no-git-tag-version)
+          node -e "const f='composer.json',j=require('./'+f);j.version='${new}'.replace(/^v/,'');require('fs').writeFileSync(f, JSON.stringify(j,null,2)+'\n')"
+          git add package.json composer.json
+          git commit -m "release: ${new}"
+          # Annotated tag (-a): `git push --follow-tags` pushes ONLY annotated
+          # tags — a lightweight tag never reaches the remote, so Composer (which
+          # resolves this package by VCS tag) would never see the release.
+          git tag -a "${new}" -m "release ${new}"
+          npm publish
+          git push --follow-tags origin HEAD:main
+
+      - name: Prune old prerelease package versions (keep newest 5)
+        continue-on-error: true  # best-effort housekeeping; needs delete:packages
+        if: ${{ inputs.publish_tag != 'none' }}
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: tds-ext-opensource
+          package-type: npm
+          min-versions-to-keep: 5
+          delete-only-pre-release-versions: 'true'
+          token: ${{ secrets.PACKAGE_TOKEN }}
+
+      - name: Prune old stable package versions (keep newest 10)
+        continue-on-error: true  # best-effort housekeeping; needs delete:packages
+        if: ${{ inputs.publish_tag == 'latest' }}
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: tds-ext-opensource
+          package-type: npm
+          min-versions-to-keep: 10
+          ignore-versions: '^.*-.*$'
+          token: ${{ secrets.PACKAGE_TOKEN }}

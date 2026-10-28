@@ -1,0 +1,24 @@
+name: Dev prerelease (push → GitHub Packages @dev)
+
+# On every push to main, publish a prerelease (<version>-dev.<run>) under the
+# `dev` dist-tag. Real versions ship via release.yml. Pipeline in _build.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: dev-publish
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prerelease:
+    uses: ./.github/workflows/_build.yml
+    with:
+      publish_tag: dev
+    secrets: inherit

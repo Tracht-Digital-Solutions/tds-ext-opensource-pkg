@@ -1,0 +1,21 @@
+name: CI
+
+# PR-only gate; push-to-main publishes a prerelease via dev.yml.
+# Pipeline body in _build.yml (runs both the phpunit + npm build gates).
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit

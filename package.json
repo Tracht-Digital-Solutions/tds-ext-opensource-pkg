@@ -1,0 +1,65 @@
+{
+  "name": "@tracht-digital-solutions/tds-ext-opensource",
+  "version": "0.1.0",
+  "description": "Open-Source-Projekte mit eigener Webseite: Version, Download und Spenden über das zentrale Stripe-Konto.",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "module",
+  "files": [
+    "dist",
+    "pages",
+    "widgets",
+    "islands",
+    "php",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./pages/*": "./pages/*",
+    "./widgets/*": "./widgets/*",
+    "./islands/*": "./islands/*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "type-check": "tsc --noEmit",
+    "lint:primitives": "tds-lint-primitives",
+    "clean": "rimraf dist",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "@tracht-digital-solutions/tds-frontend-contract": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@tracht-digital-solutions/tds-shared": ">=0.59.1",
+    "astro": ">=6",
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "rimraf": "^6.1.3",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tracht-Digital-Solutions/tds-ext-opensource-pkg.git"
+  }
+}

@@ -1,0 +1,31 @@
+name: Release (manual → GitHub Packages @latest)
+
+# Production release, ONLY on the manual button. Bumps the version in BOTH
+# package.json and composer.json (lockstep), builds, publishes the npm half, and
+# pushes the commit + tag (the tag is the Composer half's release ref).
+# Pipeline in _build.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/_build.yml
+    with:
+      publish_tag: latest
+      bump: ${{ inputs.bump }}
+    secrets: inherit

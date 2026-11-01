@@ -40,5 +40,6 @@ Composer fails on a missing path repo in CI.
 - Migration band `20261028` (`OpensourceMigrationsTest` pins it and the claimed bands of the others).
 - `oss_project`, `oss_donation`; no foreign keys across modules, unsigned `project_id`.
 - The seed migration `OpensourceSeedWparted` is idempotent and uses the table API only.
+- `OpensourceWpartedBetaFacts` updates each seeded field only while it still holds the seed's value, so panel edits survive.
 - Repositories are bound unconditionally in `register()` (PHP-DI `has()` is always true for concrete classes).
 - `DonationRepository::cutoff()` reads `CURRENT_TIMESTAMP` from the database, so a window never mixes PHP and MySQL clocks — and stays portable SQL for the SQLite tests.

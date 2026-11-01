@@ -20,7 +20,9 @@ Speichern schickt der gekoppelten Webseite ein Cache-Ereignis. Ein Release koste
 damit eine Zeile im Panel, keinen Deploy.
 
 Erstes Projekt: **WParted** (`wparted`), Seite `tds-wparted-frontend` auf
-`wparted.tracht-digital.de`. Eine Migration legt es an.
+`wparted.tracht-digital.de`. Eine Migration legt es an, eine zweite bringt es auf den Stand der
+Beta 0.8. Die Webseite zeigt die Felder Spiegel und Issues nicht an: Fehler laufen dort über
+Formular und E-Mail.
 
 ## Spenden
 
@@ -42,6 +44,23 @@ Open Source „Spenden annehmen“ einschalten.
 
 Einstellungen → Open-Source-Seiten → Kopplung anlegen. Ressource `opensource/<slug>`,
 Profil `opensource`, Scope `/opensource/projects`.
+
+## Versionen
+
+| Werkzeug | Version | Wo festgelegt |
+|---|---|---|
+| PHP | ≥ 8.1, CI mit 8.3 | `composer.json`, `.github/workflows/_build.yml` |
+| Node.js | 22 in der CI | `.github/workflows/_build.yml` |
+| npm | 11 | CI installiert `npm@11` |
+| Slim | ^4.13 | `composer.json` |
+| tds-frontend-contract | ^1.13 | `composer.json` |
+| PHPUnit | ^10.5 | `composer.json` |
+| tds-shared (Peer) | ≥ 0.59.1 | `package.json` |
+| Astro (Peer) | ≥ 6 | `package.json` |
+| React (Peer) | ≥ 18 | `package.json` |
+| TypeScript | ^6.0.3 | `package.json` |
+| Vitest | ^4.1.11 | `package.json` |
+| Datenbank | MySQL 8 in Produktion | `docs/agents/backend.md` |
 
 ## Lizenz / License
 

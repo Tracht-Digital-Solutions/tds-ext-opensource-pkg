@@ -1,6 +1,6 @@
 {
   "name": "@tracht-digital-solutions/tds-ext-opensource",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-Source-Projekte mit eigener Webseite: Version, Download und Spenden über das zentrale Stripe-Konto.",
   "license": "UNLICENSED",
   "private": false,

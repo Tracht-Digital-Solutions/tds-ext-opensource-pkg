@@ -10,11 +10,15 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
 use Tds\Ext\Opensource\Domain\DonationRepository;
 use Tds\Ext\Opensource\Domain\ProjectRepository;
+use Tds\Ext\Opensource\Domain\ReleaseNoteRepository;
 use Tds\Ext\Opensource\Support\ClientIp;
 use Tds\Ext\Opensource\Support\DonationAmount;
 use Tds\Ext\Opensource\Support\DonationCheckout;
 use Tds\Ext\Opensource\Support\DonationEvent;
+use Tds\Ext\Opensource\Support\GithubReleases;
 use Tds\Ext\Opensource\Support\ProjectFields;
+use Tds\Ext\Opensource\Support\ReleaseSource;
+use Tds\Ext\Opensource\Support\ReleaseSync;
 use Tds\Frontend\Contract\AbstractModule;
 use Tds\Frontend\Contract\ApiDocSource;
 use Tds\Frontend\Contract\CacheEvent;
@@ -57,6 +61,14 @@ use Tds\Frontend\Contract\UserContext;
  *   reason: under `/opensource/projects` the key middleware would gate it, and
  *   enforcement would turn into an outage of the donate button.
  * - `POST /opensource/stripe-webhook` is Stripe; the signature is the auth.
+ * - `POST /opensource/github-webhook/{slug}` is GitHub; the signature is the auth.
+ *
+ * ### Which release a site shows
+ *
+ * `release_mode` is `auto` (the newest public GitHub release) or `manual` (the
+ * panel's version). There is no scheduler, so `auto` checks when the site reads the
+ * project, at most every 15 minutes; the site renders at least once a day. A GitHub
+ * webhook makes it immediate. The notes are always those of the shown version.
  *
  * Admin routes live under `/opensource/admin`, outside the key prefix too.
  */
@@ -103,6 +115,7 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
     {
         return [
             new SettingDef('stripe_webhook_secret', 'Stripe Webhook Secret (Spenden)', true, 'opensource'),
+            new SettingDef('github_webhook_secret', 'GitHub Webhook Secret (neue Releases sofort anzeigen, optional)', true, 'opensource'),
         ];
     }
 
@@ -158,9 +171,11 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
         if (method_exists($c, 'set')) {
             $c->set(ProjectRepository::class, static fn ($c) => new ProjectRepository($c->get(PDO::class)));
             $c->set(DonationRepository::class, static fn ($c) => new DonationRepository($c->get(PDO::class)));
+            $c->set(ReleaseNoteRepository::class, static fn ($c) => new ReleaseNoteRepository($c->get(PDO::class)));
         }
 
         $this->registerPublic($app, $c);
+        $this->registerGithub($app, $c);
         $this->registerAdmin($app, $c);
     }
 
@@ -172,10 +187,17 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
     {
         $app->get('/opensource/projects/' . self::SLUG, function (Request $req, Response $res, array $args) use ($c): Response {
             try {
-                $row = $c->get(ProjectRepository::class)->findPublished((string) $args['slug']);
-                return $row === null
-                    ? self::json($res, ['project' => null], 404)
-                    : self::json($res, ['project' => ProjectRepository::publicShape($row, self::stripe($c)->isConfigured())]);
+                $projects = $c->get(ProjectRepository::class);
+                $row = $projects->findPublished((string) $args['slug']);
+                if ($row === null) {
+                    return self::json($res, ['project' => null], 404);
+                }
+                if ($row['release_mode'] === 'auto' && $projects->releaseCheckDue($row, ReleaseSync::INTERVAL)) {
+                    self::releaseSync($c)->sync($row);
+                    $row = $projects->findPublished((string) $args['slug']) ?? $row;
+                }
+                $note = $c->get(ReleaseNoteRepository::class)->find($row['id'], (string) $row['version']);
+                return self::json($res, ['project' => ProjectRepository::publicShape($row, self::stripe($c)->isConfigured(), $note)]);
             } catch (\Throwable $e) {
                 // Fail soft: the site has baked values for every field, and a 404
                 // is never cached by it.
@@ -244,6 +266,40 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
             }
             // Always 200 for a verified event, ours or not: the account is shared,
             // and a non-2xx makes Stripe retry another module's event for days.
+            return self::json($res, ['received' => true]);
+        });
+    }
+
+    /* ==================================================================== */
+    /* GitHub                                                                */
+    /* ==================================================================== */
+
+    private function registerGithub(App $app, ContainerInterface $c): void
+    {
+        $app->post('/opensource/github-webhook/' . self::SLUG, function (Request $req, Response $res, array $args) use ($c): Response {
+            $secret = self::githubSecret($c);
+            if ($secret === '') {
+                return self::json($res, ['error' => 'Webhook secret not configured'], 503);
+            }
+            $payload = (string) $req->getBody();
+            if (!hash_equals('sha256=' . hash_hmac('sha256', $payload, $secret), $req->getHeaderLine('X-Hub-Signature-256'))) {
+                return self::json($res, ['error' => 'Invalid signature'], 400);
+            }
+            // GitHub's test ping and other events are confirmed and ignored.
+            if ($req->getHeaderLine('X-GitHub-Event') !== 'release') {
+                return self::json($res, ['received' => true]);
+            }
+            $slug = (string) $args['slug'];
+            $row = $c->get(ProjectRepository::class)->find($slug);
+            $event = json_decode($payload, true);
+            $repo = is_array($event) ? (string) ($event['repository']['html_url'] ?? '') : '';
+            if ($row === null || GithubReleases::repoPath($repo) === null
+                || strcasecmp((string) GithubReleases::repoPath($repo), (string) GithubReleases::repoPath((string) $row['repo_url'])) !== 0) {
+                return self::json($res, ['received' => true]);
+            }
+            if (self::releaseSync($c)->sync($row)) {
+                self::refreshSite($c, $slug);
+            }
             return self::json($res, ['received' => true]);
         });
     }
@@ -320,9 +376,60 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
                 return self::json($res, ['error' => $fields], 422);
             }
             $repo->update($slug, $fields);
+            $body = (array) $req->getParsedBody();
+            $notesVersion = trim((string) ($body['notes_version'] ?? ''));
+            if ($notesVersion !== '') {
+                $c->get(ReleaseNoteRepository::class)->save(
+                    $existing['id'],
+                    $notesVersion,
+                    isset($body['notes_de']) ? (string) $body['notes_de'] : null,
+                    isset($body['notes_en']) ? (string) $body['notes_en'] : null,
+                );
+            }
+            self::releaseSync($c)->sync((array) $repo->find($slug));
             return self::json($res, [
                 'project' => $repo->find($slug),
                 'cache' => self::refreshSite($c, $slug),
+            ]);
+        });
+
+        $app->get('/opensource/admin/projects/' . self::SLUG . '/releases', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::require($c->get(UserContext::class), 'opensource:read', $res)) !== null) {
+                return $deny;
+            }
+            $row = $c->get(ProjectRepository::class)->find((string) $args['slug']);
+            if ($row === null) {
+                return self::json($res, ['error' => 'not_found'], 404);
+            }
+            $releases = [];
+            $error = null;
+            try {
+                $releases = self::releaseSource($c)->releases((string) $row['repo_url']);
+            } catch (\Throwable $e) {
+                $error = $e->getMessage();
+            }
+            return self::json($res, [
+                'releases' => $releases,
+                'notes' => (object) $c->get(ReleaseNoteRepository::class)->all($row['id']),
+                'error' => $error,
+            ]);
+        });
+
+        $app->post('/opensource/admin/projects/' . self::SLUG . '/releases/sync', function (Request $req, Response $res, array $args) use ($c): Response {
+            if (($deny = self::require($c->get(UserContext::class), 'opensource:write', $res)) !== null) {
+                return $deny;
+            }
+            $repo = $c->get(ProjectRepository::class);
+            $slug = (string) $args['slug'];
+            $row = $repo->find($slug);
+            if ($row === null) {
+                return self::json($res, ['error' => 'not_found'], 404);
+            }
+            $changed = self::releaseSync($c)->sync($row);
+            return self::json($res, [
+                'project' => $repo->find($slug),
+                'changed' => $changed,
+                'cache' => $changed ? self::refreshSite($c, $slug) : null,
             ]);
         });
 
@@ -470,6 +577,26 @@ final class OpensourceModule extends AbstractModule implements ApiDocSource, Sit
         } catch (\Throwable) {
             return '';
         }
+    }
+
+    private static function githubSecret(ContainerInterface $c): string
+    {
+        try {
+            $store = $c->has(SettingsStore::class) ? $c->get(SettingsStore::class) : null;
+            return $store instanceof SettingsStore ? (string) ($store->getSecret(self::NS, 'github_webhook_secret') ?? '') : '';
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    private static function releaseSource(ContainerInterface $c): ReleaseSource
+    {
+        return $c->has(ReleaseSource::class) ? $c->get(ReleaseSource::class) : new GithubReleases();
+    }
+
+    private static function releaseSync(ContainerInterface $c): ReleaseSync
+    {
+        return new ReleaseSync($c->get(ProjectRepository::class), self::releaseSource($c));
     }
 
     private static function connections(ContainerInterface $c): ?SiteConnections

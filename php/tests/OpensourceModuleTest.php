@@ -9,6 +9,8 @@ use Slim\App;
 use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Tds\Ext\Opensource\OpensourceModule;
+use Tds\Ext\Opensource\Support\GithubReleases;
+use Tds\Ext\Opensource\Support\ReleaseSource;
 use Tds\Ext\Opensource\Tests\Support\TestContainer;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SettingsStore;
@@ -33,7 +35,12 @@ final class OpensourceModuleTest extends TestCase
             tagline_de TEXT DEFAULT \'\', tagline_en TEXT DEFAULT \'\', status_de TEXT, status_en TEXT,
             donations_enabled INTEGER DEFAULT 0, donation_presets TEXT DEFAULT \'500,1000,2500\',
             donation_min INTEGER DEFAULT 200, donation_max INTEGER DEFAULT 50000, currency TEXT DEFAULT \'EUR\',
-            published INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+            published INTEGER DEFAULT 0, release_mode TEXT DEFAULT \'manual\', release_body TEXT, release_url TEXT,
+            release_checked_at TEXT, release_error TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+        $this->pdo->exec('CREATE TABLE oss_release_note (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, version TEXT, notes_de TEXT, notes_en TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE (project_id, version))');
         $this->pdo->exec('CREATE TABLE oss_donation (
             id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, stripe_session_id TEXT UNIQUE, amount INTEGER,
             currency TEXT, lang TEXT, status TEXT DEFAULT \'open\', ip_hash TEXT,
@@ -44,13 +51,38 @@ final class OpensourceModuleTest extends TestCase
             ('secret', 'Secret', NULL, 'https://example.org', 'MIT', NULL, 0, 0)");
     }
 
-    private function app(UserContext $user, ?StripeApi $stripe = null, string $webhookSecret = ''): App
+    /** @param list<array<string,mixed>> $releases */
+    private function githubProject(string $mode): void
+    {
+        $this->pdo->exec("UPDATE oss_project SET repo_url = 'https://github.com/jtracht/WParted', release_mode = '{$mode}' WHERE slug = 'wparted'");
+    }
+
+    private function releases(): ReleaseSource
+    {
+        return new class implements ReleaseSource {
+            public int $calls = 0;
+
+            public function releases(string $repoUrl): array
+            {
+                $this->calls++;
+                return [
+                    ['version' => '0.5.0', 'date' => '2026-11-05', 'url' => 'https://github.com/jtracht/WParted/releases/tag/v0.5.0', 'body' => 'Notes five', 'prerelease' => true],
+                    ['version' => '0.4.0', 'date' => '2026-11-01', 'url' => 'https://github.com/jtracht/WParted/releases/tag/v0.4.0', 'body' => 'Notes four', 'prerelease' => true],
+                ];
+            }
+        };
+    }
+
+    private function app(UserContext $user, ?StripeApi $stripe = null, string $webhookSecret = '', ?ReleaseSource $releases = null, string $githubSecret = ''): App
     {
         $container = new TestContainer([
             PDO::class => $this->pdo,
             UserContext::class => $user,
-            SettingsStore::class => self::settings($webhookSecret),
+            SettingsStore::class => self::settings($webhookSecret, $githubSecret),
         ]);
+        if ($releases !== null) {
+            $container->set(ReleaseSource::class, $releases);
+        }
         if ($stripe !== null) {
             $container->set(StripeApi::class, $stripe);
         }
@@ -61,10 +93,10 @@ final class OpensourceModuleTest extends TestCase
         return $app;
     }
 
-    private static function settings(string $webhookSecret): SettingsStore
+    private static function settings(string $webhookSecret, string $githubSecret = ''): SettingsStore
     {
-        return new class ($webhookSecret) implements SettingsStore {
-            public function __construct(private readonly string $secret)
+        return new class ($webhookSecret, $githubSecret) implements SettingsStore {
+            public function __construct(private readonly string $secret, private readonly string $github)
             {
             }
 
@@ -75,6 +107,9 @@ final class OpensourceModuleTest extends TestCase
 
             public function getSecret(string $namespace, string $key): ?string
             {
+                if ($namespace === 'opensource' && $key === 'github_webhook_secret') {
+                    return $this->github !== '' ? $this->github : null;
+                }
                 return $namespace === 'opensource' && $key === 'stripe_webhook_secret' && $this->secret !== '' ? $this->secret : null;
             }
 
@@ -257,6 +292,124 @@ final class OpensourceModuleTest extends TestCase
         $body = self::decode($response);
         self::assertSame('0.4.0-alpha', $body['project']['version']);
         self::assertSame('not_configured', $body['cache']['cache_status']);
+    }
+
+    private function publicProject(ReleaseSource $releases): array
+    {
+        $request = (new ServerRequestFactory())->createServerRequest('GET', '/opensource/projects/wparted');
+        return self::decode($this->app($this->user(false), $this->stripe(false), '', $releases)->handle($request))['project'];
+    }
+
+    public function testAutoModeShowsTheNewestReleaseAndItsNotes(): void
+    {
+        $this->githubProject('auto');
+        $project = $this->publicProject($this->releases());
+
+        self::assertSame('0.5.0', $project['version']);
+        self::assertSame('2026-11-05', $project['versionDate']);
+        self::assertSame('https://github.com/jtracht/WParted/releases/tag/v0.5.0', $project['downloadUrl']);
+        self::assertSame(['text' => 'Notes five', 'lang' => 'en'], $project['releaseNotes']['de']);
+        self::assertSame(['text' => 'Notes five', 'lang' => 'en'], $project['releaseNotes']['en']);
+    }
+
+    public function testAutoModeAsksGithubAtMostOnceInTheInterval(): void
+    {
+        $this->githubProject('auto');
+        $source = $this->releases();
+        $this->publicProject($source);
+        $this->publicProject($source);
+        self::assertSame(1, $source->calls);
+    }
+
+    public function testAGithubFailureKeepsTheShownVersion(): void
+    {
+        $this->githubProject('auto');
+        $broken = new class implements ReleaseSource {
+            public function releases(string $repoUrl): array
+            {
+                throw new \RuntimeException('GitHub hat nicht geantwortet (HTTP 503).');
+            }
+        };
+        self::assertSame('0.3.0-alpha', $this->publicProject($broken)['version']);
+        $error = $this->pdo->query("SELECT release_error FROM oss_project WHERE slug = 'wparted'")->fetchColumn();
+        self::assertStringContainsString('HTTP 503', (string) $error);
+    }
+
+    public function testManualModeShowsTheChosenVersionWithRewrittenNotes(): void
+    {
+        $this->githubProject('manual');
+        $request = (new ServerRequestFactory())->createServerRequest('PUT', '/opensource/admin/projects/wparted')
+            ->withHeader('Content-Type', 'application/json');
+        $request->getBody()->write((string) json_encode([
+            'version' => 'v0.4.0', 'notes_version' => '0.4.0', 'notes_de' => 'Neu geschrieben', 'notes_en' => '',
+        ]));
+        $source = $this->releases();
+        $response = $this->app($this->user(true, ['opensource:write']), $this->stripe(true), '', $source)->handle($request);
+        self::assertSame(200, $response->getStatusCode());
+
+        $this->pdo->exec("UPDATE oss_project SET version = '0.4.0' WHERE slug = 'wparted'");
+        $project = $this->publicProject($source);
+        self::assertSame('0.4.0', $project['version']);
+        self::assertSame(['text' => 'Neu geschrieben', 'lang' => 'de'], $project['releaseNotes']['de']);
+        self::assertSame(['text' => 'Notes four', 'lang' => 'en'], $project['releaseNotes']['en']);
+    }
+
+    public function testAutoModeIgnoresAVersionFromAStaleForm(): void
+    {
+        $this->githubProject('auto');
+        $request = (new ServerRequestFactory())->createServerRequest('PUT', '/opensource/admin/projects/wparted')
+            ->withHeader('Content-Type', 'application/json');
+        $request->getBody()->write((string) json_encode(['version' => '9.9.9']));
+        $response = $this->app($this->user(true, ['opensource:write']), $this->stripe(true), '', $this->releases())->handle($request);
+        self::assertSame('0.5.0', self::decode($response)['project']['version']);
+    }
+
+    public function testEmptiedNotesFallBackToGithub(): void
+    {
+        $this->githubProject('auto');
+        $source = $this->releases();
+        $id = (int) $this->pdo->query("SELECT id FROM oss_project WHERE slug = 'wparted'")->fetchColumn();
+        (new \Tds\Ext\Opensource\Domain\ReleaseNoteRepository($this->pdo))->save($id, '0.5.0', 'Text', null);
+        self::assertSame('Text', $this->publicProject($source)['releaseNotes']['de']['text']);
+        (new \Tds\Ext\Opensource\Domain\ReleaseNoteRepository($this->pdo))->save($id, '0.5.0', '', '');
+        self::assertSame('Notes five', $this->publicProject($source)['releaseNotes']['de']['text']);
+    }
+
+    public function testTheGithubWebhookChecksItsSignatureAndRepository(): void
+    {
+        $this->githubProject('auto');
+        $source = $this->releases();
+        $send = function (array $event, string $secret, string $type = 'release') use ($source) {
+            $payload = (string) json_encode($event);
+            $request = (new ServerRequestFactory())->createServerRequest('POST', '/opensource/github-webhook/wparted')
+                ->withHeader('X-GitHub-Event', $type)
+                ->withHeader('X-Hub-Signature-256', 'sha256=' . hash_hmac('sha256', $payload, $secret));
+            $request->getBody()->write($payload);
+            return $this->app($this->user(false), null, '', $source, 'geheim')->handle($request);
+        };
+        $ours = ['repository' => ['html_url' => 'https://github.com/jtracht/WParted']];
+
+        self::assertSame(400, $send($ours, 'falsch')->getStatusCode());
+        self::assertSame(200, $send(['repository' => ['html_url' => 'https://github.com/other/repo']], 'geheim')->getStatusCode());
+        self::assertSame(200, $send($ours, 'geheim', 'ping')->getStatusCode());
+        self::assertSame(0, $source->calls);
+        self::assertSame(200, $send($ours, 'geheim')->getStatusCode());
+        self::assertSame(1, $source->calls);
+    }
+
+    public function testGithubAnswersAreParsedWithoutDrafts(): void
+    {
+        $parsed = GithubReleases::parse([
+            ['tag_name' => 'v1.0.0', 'draft' => true, 'published_at' => '2026-11-03T00:00:00Z'],
+            ['tag_name' => 'v0.9.0', 'draft' => false, 'prerelease' => true, 'published_at' => '2026-11-01T10:00:00Z', 'html_url' => 'https://github.com/a/b/releases/tag/v0.9.0', 'body' => ' Text '],
+            ['tag_name' => 'v0.8.0', 'draft' => false, 'published_at' => '2026-10-01T10:00:00Z', 'html_url' => 'http://insecure', 'body' => ''],
+        ]);
+        self::assertSame(['0.9.0', '0.8.0'], array_column($parsed, 'version'));
+        self::assertSame('2026-11-01', $parsed[0]['date']);
+        self::assertSame('Text', $parsed[0]['body']);
+        self::assertNull($parsed[1]['url']);
+        self::assertSame('jtracht/WParted', GithubReleases::repoPath('https://github.com/jtracht/WParted.git'));
+        self::assertNull(GithubReleases::repoPath('https://git.tracht-digital.de/jtracht/WParted'));
     }
 
     public function testTheKeyPrefixNeverCoversTheBrowserRoute(): void

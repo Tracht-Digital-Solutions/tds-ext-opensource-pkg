@@ -8,6 +8,9 @@ import { formatCents, formatDateTime, parseEuros } from "@tracht-digital-solutio
 /**
  * Open Source — pick a project, edit what changes with a release, see donations.
  *
+ * - **The notes belong to a version.** The fields always hold the rewritten notes
+ *   of the version the site shows; an empty field means GitHub's text.
+ *
  * - **`apiFetch`/`sendJson`, never a relative `fetch`.** A relative path hits
  *   the panel's own host and turns every failure into a calm empty list.
  * - **Spread, never replace.** Every field edit is `{ ...draft, x }`.
@@ -38,6 +41,39 @@ export interface Project {
   donation_max: number;
   currency: string;
   published: boolean;
+  release_mode: "auto" | "manual";
+  release_body: string | null;
+  release_url: string | null;
+  release_checked_at: string | null;
+  release_error: string | null;
+}
+
+export interface GithubRelease {
+  version: string;
+  date: string | null;
+  url: string | null;
+  body: string | null;
+  prerelease: boolean;
+}
+
+interface ReleasesPayload {
+  releases: GithubRelease[];
+  notes: Record<string, { de: string | null; en: string | null }>;
+  error: string | null;
+}
+
+/** `v1.2.0` and `1.2.0` are the same version. */
+export function normalizeVersion(version: string | null | undefined): string {
+  return (version ?? "").trim().replace(/^v(?=\d)/, "");
+}
+
+/** What picking a version from GitHub's list fills in; a typed version changes nothing else. */
+export function fieldsFromRelease(
+  version: string,
+  releases: readonly GithubRelease[],
+): Partial<Pick<Project, "version_date" | "download_url">> {
+  const match = releases.find((r) => r.version === normalizeVersion(version));
+  return match ? { version_date: match.date, download_url: match.url } : {};
 }
 
 interface ProjectsPayload {
@@ -122,12 +158,17 @@ export default function ProjectsScreen() {
   const [slug, setSlug] = useState<string | null>(null);
   const [draft, setDraft] = useState<Project | null>(null);
   const [presets, setPresets] = useState("");
+  const [notes, setNotes] = useState<{ version: string; de: string; en: string }>({ version: "", de: "", en: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "warning" | "info"; text: string } | null>(null);
 
   const projects = query.data?.projects ?? [];
   const selected = projects.find((p) => p.slug === slug) ?? projects[0] ?? null;
+  const releasesQuery = useCachedJson<ReleasesPayload>(selected ? `/opensource/admin/projects/${selected.slug}/releases` : null);
+  const releases = releasesQuery.data?.releases ?? [];
+  const shownVersion = normalizeVersion(draft?.version);
+  const shownRelease = releases.find((r) => r.version === shownVersion) ?? null;
 
   // A new selection (or the first load) starts a fresh draft. A refresh of the
   // SAME project never overwrites what somebody is typing.
@@ -139,6 +180,19 @@ export default function ProjectsScreen() {
       setError(null);
     }
   }, [selected, draft?.slug]);
+
+  // The note fields follow the shown version. Reloads of the same version keep
+  // what somebody is typing, except for the first arrival of the stored texts.
+  const notesLoaded = releasesQuery.data !== undefined && releasesQuery.data !== null;
+  const [notesLoadedFor, setNotesLoadedFor] = useState("");
+  useEffect(() => {
+    const key = `${draft?.slug ?? ""}:${shownVersion}:${notesLoaded}`;
+    if (key !== notesLoadedFor) {
+      const stored = releasesQuery.data?.notes[shownVersion];
+      setNotes({ version: shownVersion, de: stored?.de ?? "", en: stored?.en ?? "" });
+      setNotesLoadedFor(key);
+    }
+  }, [draft?.slug, shownVersion, notesLoaded, notesLoadedFor, releasesQuery.data]);
 
   const set = <K extends keyof Project>(key: K, value: Project[K]) => {
     setDraft((d) => (d ? { ...d, [key]: value } : d));
@@ -155,7 +209,12 @@ export default function ProjectsScreen() {
     setError(null);
     setNotice(null);
     try {
-      const res = await sendJson(`/opensource/admin/projects/${draft.slug}`, "PUT", { ...draft, donation_presets: cents });
+      const res = await sendJson(`/opensource/admin/projects/${draft.slug}`, "PUT", {
+        ...draft,
+        donation_presets: cents,
+        // Only with the stored texts loaded: otherwise empty fields would erase them.
+        ...(notesLoaded && notes.version !== "" ? { notes_version: notes.version, notes_de: notes.de, notes_en: notes.en } : {}),
+      });
       if (!res.ok) {
         setError(await describeFailureFrom(res, "Speichern fehlgeschlagen"));
         return;
@@ -168,6 +227,28 @@ export default function ProjectsScreen() {
     } catch (err) {
       setError(await describeFailureFrom(null, "Speichern fehlgeschlagen"));
       console.error(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncNow = async (): Promise<void> => {
+    if (!draft) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await sendJson(`/opensource/admin/projects/${draft.slug}/releases/sync`, "POST", {});
+      if (!res.ok) {
+        setError(await describeFailureFrom(res, "GitHub konnte nicht abgerufen werden"));
+        return;
+      }
+      const body = (await res.json()) as { project: Project; changed: boolean; cache?: { cache_status?: string } | null };
+      setDraft((d) => (d ? { ...d, ...body.project } : d));
+      setNotice(body.changed ? cacheMessage(body.cache?.cache_status) : { tone: "info", text: "Keine Änderung: Die Webseite zeigt schon diesen Stand." });
+      invalidate("/opensource/");
+    } catch {
+      toast.danger("GitHub konnte nicht abgerufen werden.");
     } finally {
       setBusy(false);
     }
@@ -245,18 +326,85 @@ export default function ProjectsScreen() {
             </p>
           ) : null}
 
+          <h3 className="font-semibold">Version auf der Webseite</h3>
           <label className="tds-field-row">
-            <span>Version</span>
-            <input className="field-boxed" value={draft.version ?? ""} onChange={(e) => set("version", e.target.value)} placeholder="0.4.0-alpha" />
+            <span>Anzeige</span>
+            <select className="field-boxed" value={draft.release_mode} onChange={(e) => set("release_mode", e.target.value as Project["release_mode"])}>
+              <option value="auto">Automatisch: neuester öffentlicher GitHub-Release</option>
+              <option value="manual">Manuell: Version selbst festlegen</option>
+            </select>
+          </label>
+          {draft.release_mode === "auto" ? (
+            <>
+              <p className="marginalia">
+                Aktuell: {draft.version ?? "noch keine Version"}
+                {draft.version_date ? ` vom ${draft.version_date}` : ""}. Vorabversionen zählen mit, Entwürfe nicht.
+                Die Webseite übernimmt einen neuen Release spätestens am nächsten Tag, mit GitHub-Webhook sofort.
+              </p>
+              <div className="tds-toolbar">
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void syncNow()}>
+                  Jetzt bei GitHub abrufen
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="tds-field-row">
+                <span>Version</span>
+                <input
+                  className="field-boxed"
+                  list="opensource-releases"
+                  value={draft.version ?? ""}
+                  placeholder="0.4.0-alpha"
+                  onChange={(e) => {
+                    const version = e.target.value;
+                    setDraft((d) => (d ? { ...d, version, ...fieldsFromRelease(version, releases) } : d));
+                  }}
+                />
+                <datalist id="opensource-releases">
+                  {releases.map((r) => (
+                    <option key={r.version} value={r.version}>
+                      {r.date ?? ""}
+                    </option>
+                  ))}
+                </datalist>
+              </label>
+              <label className="tds-field-row">
+                <span>Veröffentlicht am</span>
+                <input className="field-boxed" type="date" value={draft.version_date ?? ""} onChange={(e) => set("version_date", e.target.value)} />
+              </label>
+              <label className="tds-field-row">
+                <span>Download</span>
+                <input className="field-boxed" type="url" value={draft.download_url ?? ""} onChange={(e) => set("download_url", e.target.value)} />
+              </label>
+            </>
+          )}
+          {draft.release_error ? <Alert tone="warning">GitHub: {draft.release_error}</Alert> : null}
+          {releasesQuery.data?.error ? <Alert tone="warning">GitHub: {releasesQuery.data.error}</Alert> : null}
+
+          <h3 className="font-semibold">Release-Notes{shownVersion ? ` für ${shownVersion}` : ""}</h3>
+          <p className="marginalia">
+            Die Webseite zeigt immer die Notes der angezeigten Version. Ein leeres Feld nimmt den Text von GitHub, der meist englisch ist.
+            Markdown ist erlaubt: Listen, **fett**, Links.
+          </p>
+          <label className="tds-field-row">
+            <span>Deutsch</span>
+            <textarea className="field-boxed" rows={6} maxLength={20000} value={notes.de} disabled={!notesLoaded} onChange={(e) => setNotes((n) => ({ ...n, de: e.target.value }))} />
           </label>
           <label className="tds-field-row">
-            <span>Veröffentlicht am</span>
-            <input className="field-boxed" type="date" value={draft.version_date ?? ""} onChange={(e) => set("version_date", e.target.value)} />
+            <span>Englisch</span>
+            <textarea className="field-boxed" rows={6} maxLength={20000} value={notes.en} disabled={!notesLoaded} onChange={(e) => setNotes((n) => ({ ...n, en: e.target.value }))} />
           </label>
-          <label className="tds-field-row">
-            <span>Download</span>
-            <input className="field-boxed" type="url" value={draft.download_url ?? ""} onChange={(e) => set("download_url", e.target.value)} />
-          </label>
+          {shownRelease?.body ? (
+            <details>
+              <summary className="marginalia">Text von GitHub ansehen</summary>
+              <pre className="marginalia whitespace-pre-wrap">{shownRelease.body}</pre>
+              <button type="button" className="btn btn-ghost" onClick={() => setNotes((n) => ({ ...n, de: n.de || shownRelease.body!, en: n.en || shownRelease.body! }))}>
+                In leere Felder übernehmen
+              </button>
+            </details>
+          ) : null}
+
           <label className="tds-field-row">
             <span>Stand (Deutsch)</span>
             <textarea className="field-boxed" rows={2} maxLength={400} value={draft.status_de ?? ""} onChange={(e) => set("status_de", e.target.value)} />

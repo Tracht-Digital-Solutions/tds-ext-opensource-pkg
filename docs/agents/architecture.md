@@ -19,6 +19,7 @@
 | `/opensource/projects/{slug}` | the project site's server | site key (`siteKeyRoutes`) |
 | `/opensource/donate/{slug}` | a visitor's browser | none; amount checked, 10 per IP hash and hour |
 | `/opensource/stripe-webhook` | Stripe | signature |
+| `/opensource/github-webhook/{slug}` | GitHub | signature (`github_webhook_secret`, optional) |
 | `/opensource/summary`, `/opensource/admin/*` | the panel | `opensource:read` / `opensource:write` |
 
 The site-key middleware matches by **prefix on segment boundaries**. That is why the
@@ -39,6 +40,22 @@ route an open redirect behind Stripe's checkout page.
 
 `donations.enabled` in the public shape is the project's switch **and** a configured
 Stripe account. The site hides or disables its button on `false`.
+
+## Releases
+
+`release_mode` decides what the site shows (`Support/ReleaseSync`):
+
+- `auto`: the newest public GitHub release, pre-releases included. The list route, never
+  `/releases/latest`, which skips pre-releases. Version, date, download and notes come from it.
+- `manual`: version, date and download from the panel; GitHub only supplies that version's notes.
+
+There is no scheduler. `auto` checks on the site's read, at most every 15 minutes, and the site
+renders at least once a day; the GitHub webhook and the panel's button are immediate. A failure
+keeps the stored release and shows in `release_error`.
+
+Notes belong to a version: `oss_release_note` holds what was rewritten in the panel, and a language
+left empty falls back as in `ProjectRepository::releaseNotes`. `release_body` is GitHub's text for
+the shown version. No token: the source repository must be public.
 
 ## Site connection and cache
 

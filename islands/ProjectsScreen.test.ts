@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { cacheMessage, eurosToPresets, presetsToEuros } from "./ProjectsScreen.tsx";
+import { cacheMessage, eurosToPresets, fieldsFromRelease, normalizeVersion, presetsToEuros } from "./ProjectsScreen.tsx";
+
+describe("picking a version", () => {
+  const releases = [{ version: "0.4.0-alpha", date: "2026-11-01", url: "https://github.com/x/y/releases/tag/v0.4.0-alpha", body: null, prerelease: true }];
+
+  it("treats v1.2.0 and 1.2.0 as the same", () => {
+    expect(normalizeVersion("v0.4.0-alpha")).toBe("0.4.0-alpha");
+    expect(normalizeVersion(null)).toBe("");
+  });
+
+  it("fills date and download from GitHub's list, and leaves a typed version alone", () => {
+    expect(fieldsFromRelease("v0.4.0-alpha", releases)).toEqual({ version_date: "2026-11-01", download_url: releases[0]!.url });
+    expect(fieldsFromRelease("9.9.9", releases)).toEqual({});
+  });
+});
 
 describe("donation presets in euros", () => {
   it("shows stored cents as euros", () => {

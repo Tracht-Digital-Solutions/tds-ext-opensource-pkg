@@ -21,7 +21,7 @@ return [
         'auth' => 'public',
         'params' => [$slug],
         'responses' => [
-            ['status' => 200, 'description' => '`{project: {slug, name, version, downloadUrl, tagline, status, donations, …}}`'],
+            ['status' => 200, 'description' => '`{project: {slug, name, version, downloadUrl, releaseNotes: {url, de: {text, lang}, en: {text, lang}}, tagline, status, donations, …}}`'],
             ['status' => 404, 'description' => 'Unbekannt, unveröffentlicht oder Lesefehler: `{project: null}`'],
         ],
     ],
@@ -57,6 +57,42 @@ return [
             ['status' => 200, 'description' => '`{received: true}`'],
             ['status' => 400, 'description' => 'Ungültige Signatur'],
             ['status' => 503, 'description' => 'Kein Webhook-Geheimnis hinterlegt'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/opensource/github-webhook/{slug:[a-z0-9-]+}',
+        'summary' => 'GitHub-Webhook: neuer oder geänderter Release',
+        'description' => 'Signatur `X-Hub-Signature-256` geprüft. Wertet nur `release`-Ereignisse des Repositorys aus, das zum Projekt gehört.',
+        'tag' => 'Öffentlich',
+        'auth' => 'token',
+        'params' => [$slug],
+        'responses' => [
+            ['status' => 200, 'description' => '`{received: true}`'],
+            ['status' => 400, 'description' => 'Ungültige Signatur'],
+            ['status' => 503, 'description' => 'Kein Webhook-Geheimnis hinterlegt'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/opensource/admin/projects/{slug:[a-z0-9-]+}/releases',
+        'summary' => 'Öffentliche GitHub-Releases und umgeschriebene Release-Notes',
+        'permission' => 'opensource:read',
+        'params' => [$slug],
+        'responses' => [
+            ['status' => 200, 'description' => '`{releases: [{version, date, url, body, prerelease}], notes: {<version>: {de, en}}, error}`'],
+            ['status' => 404, 'description' => 'Unbekannt'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/opensource/admin/projects/{slug:[a-z0-9-]+}/releases/sync',
+        'summary' => 'Release jetzt bei GitHub abrufen',
+        'permission' => 'opensource:write',
+        'params' => [$slug],
+        'responses' => [
+            ['status' => 200, 'description' => '`{project, changed, cache}`; ein Fehler steht in `project.release_error`'],
+            ['status' => 404, 'description' => 'Unbekannt'],
         ],
     ],
     [

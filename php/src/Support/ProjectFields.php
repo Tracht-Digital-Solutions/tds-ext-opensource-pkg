@@ -24,6 +24,16 @@ final class ProjectFields
     {
         $out = [];
 
+        $mode = (string) ($body['release_mode'] ?? ($existing['release_mode'] ?? 'manual'));
+        if (!in_array($mode, ['auto', 'manual'], true)) {
+            return 'Die Versionsanzeige muss automatisch oder manuell sein.';
+        }
+        $out['release_mode'] = $mode;
+        if ($mode === 'auto') {
+            // GitHub decides these; a stale form must not overwrite them.
+            unset($body['version'], $body['version_date'], $body['download_url']);
+        }
+
         if ($existing === null) {
             $slug = strtolower(trim((string) ($body['slug'] ?? '')));
             if (preg_match(self::SLUG, $slug) !== 1) {

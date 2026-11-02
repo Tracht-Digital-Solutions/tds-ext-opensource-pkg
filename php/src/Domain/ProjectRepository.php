@@ -17,13 +17,14 @@ final class ProjectRepository
     private const COLUMNS = 'id, slug, name, site_url, repo_url, mirror_url, issues_url, license, '
         . 'version, version_date, download_url, tagline_de, tagline_en, status_de, status_en, '
         . 'donations_enabled, donation_presets, donation_min, donation_max, currency, published, '
+        . 'release_mode, release_body, release_url, release_checked_at, release_error, '
         . 'created_at, updated_at';
 
     /** Columns a panel save may write. `slug` only on insert. */
     private const WRITABLE = [
         'name', 'site_url', 'repo_url', 'mirror_url', 'issues_url', 'license', 'version',
         'version_date', 'download_url', 'tagline_de', 'tagline_en', 'status_de', 'status_en',
-        'donations_enabled', 'donation_presets', 'donation_min', 'donation_max', 'currency', 'published',
+        'donations_enabled', 'donation_presets', 'donation_min', 'donation_max', 'currency', 'published', 'release_mode',
     ];
 
     public function __construct(private readonly PDO $pdo)
@@ -87,13 +88,79 @@ final class ProjectRepository
     }
 
     /**
+     * @param array{version:mixed,version_date:mixed,download_url:mixed,release_body:mixed,release_url:mixed} $release
+     */
+    public function applyRelease(string $slug, array $release): void
+    {
+        $this->pdo->prepare(
+            'UPDATE oss_project SET version = :version, version_date = :version_date, download_url = :download_url, '
+            . 'release_body = :release_body, release_url = :release_url WHERE slug = :slug_key'
+        )->execute([
+            ':version' => $release['version'],
+            ':version_date' => $release['version_date'],
+            ':download_url' => $release['download_url'],
+            ':release_body' => $release['release_body'],
+            ':release_url' => $release['release_url'],
+            ':slug_key' => $slug,
+        ]);
+    }
+
+    /** The check's time comes from the database, the clock `releaseCheckDue` compares with. */
+    public function stampReleaseCheck(string $slug, ?string $error): void
+    {
+        $this->pdo->prepare('UPDATE oss_project SET release_checked_at = CURRENT_TIMESTAMP, release_error = :e WHERE slug = :s')
+            ->execute([':e' => $error, ':s' => $slug]);
+    }
+
+    /** @param array<string,mixed> $row */
+    public function releaseCheckDue(array $row, int $seconds): bool
+    {
+        $last = $row['release_checked_at'] ?? null;
+        if ($last === null) {
+            return true;
+        }
+        $now = $this->pdo->query('SELECT CURRENT_TIMESTAMP')?->fetchColumn();
+        return strtotime((string) $now) - strtotime((string) $last) >= $seconds;
+    }
+
+    /**
+     * Each language's notes: rewritten in the panel, else GitHub's text, which is
+     * English. German falls back to the English rewrite before GitHub's text, and
+     * `lang` says what the text really is, for the page's markup.
+     *
+     * @param array<string,mixed>            $row
+     * @param array{de:?string,en:?string}|null $note
+     * @return array<string,mixed>
+     */
+    public static function releaseNotes(array $row, ?array $note): array
+    {
+        $github = $row['release_body'] ?? null;
+        $de = $note['de'] ?? null;
+        $en = $note['en'] ?? null;
+        $pick = static function (array $candidates): ?array {
+            foreach ($candidates as [$text, $lang]) {
+                if (is_string($text) && trim($text) !== '') {
+                    return ['text' => $text, 'lang' => $lang];
+                }
+            }
+            return null;
+        };
+        return [
+            'url' => $row['release_url'] ?? null,
+            'de' => $pick([[$de, 'de'], [$en, 'en'], [$github, 'en']]),
+            'en' => $pick([[$en, 'en'], [$github, 'en'], [$de, 'de']]),
+        ];
+    }
+
+    /**
      * The shape the public site reads. Never the panel row: no ids, no
      * timestamps, no unpublished flags.
      *
      * @param array<string,mixed> $row
+     * @param array{de:?string,en:?string}|null $note the shown version's rewritten notes
      * @return array<string,mixed>
      */
-    public static function publicShape(array $row, bool $paymentsReady): array
+    public static function publicShape(array $row, bool $paymentsReady, ?array $note = null): array
     {
         [$min, $max] = DonationAmount::limits((int) $row['donation_min'], (int) $row['donation_max']);
         return [
@@ -107,6 +174,7 @@ final class ProjectRepository
             'version' => $row['version'],
             'versionDate' => $row['version_date'],
             'downloadUrl' => $row['download_url'],
+            'releaseNotes' => self::releaseNotes($row, $note),
             'tagline' => ['de' => $row['tagline_de'], 'en' => $row['tagline_en']],
             'status' => ['de' => $row['status_de'], 'en' => $row['status_en']],
             'donations' => [

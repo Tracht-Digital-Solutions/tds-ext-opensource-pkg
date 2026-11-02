@@ -24,7 +24,7 @@ final class ProjectFields
     {
         $out = [];
 
-        $mode = (string) ($body['release_mode'] ?? ($existing['release_mode'] ?? 'manual'));
+        $mode = (string) ($body['release_mode'] ?? ($existing['release_mode'] ?? 'auto'));
         if (!in_array($mode, ['auto', 'manual'], true)) {
             return 'Die Versionsanzeige muss automatisch oder manuell sein.';
         }

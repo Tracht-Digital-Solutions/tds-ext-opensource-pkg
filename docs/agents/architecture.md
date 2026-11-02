@@ -43,7 +43,7 @@ Stripe account. The site hides or disables its button on `false`.
 
 ## Releases
 
-`release_mode` decides what the site shows (`Support/ReleaseSync`):
+`release_mode` decides what the site shows (`Support/ReleaseSync`). A project created in the panel starts on `auto`:
 
 - `auto`: the newest public GitHub release, pre-releases included. The list route, never
   `/releases/latest`, which skips pre-releases. Version, date, download and notes come from it.

@@ -412,6 +412,17 @@ final class OpensourceModuleTest extends TestCase
         self::assertNull(GithubReleases::repoPath('https://git.tracht-digital.de/jtracht/WParted'));
     }
 
+    public function testANewProjectFollowsGithubByDefault(): void
+    {
+        $fields = \Tds\Ext\Opensource\Support\ProjectFields::validate(
+            ['slug' => 'neu', 'name' => 'Neu', 'repo_url' => 'https://github.com/a/b', 'license' => 'MIT', 'version' => '9.9.9'],
+            null,
+        );
+        self::assertIsArray($fields);
+        self::assertSame('auto', $fields['release_mode']);
+        self::assertNull($fields['version']);
+    }
+
     public function testTheKeyPrefixNeverCoversTheBrowserRoute(): void
     {
         $prefixes = (new OpensourceModule())->siteKeyRoutes();

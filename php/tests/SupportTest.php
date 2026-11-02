@@ -118,8 +118,8 @@ final class SupportTest extends TestCase
             'http repo' => ['repo_url' => 'http://example.org/repo'],
             'site with path' => ['site_url' => 'https://example.org/wparted'],
             'license' => ['license' => 'GPL 2'],
-            'version' => ['version' => 'latest'],
-            'date' => ['version_date' => '2026-02-30'],
+            'version' => ['version' => 'latest', 'release_mode' => 'manual'],
+            'date' => ['version_date' => '2026-02-30', 'release_mode' => 'manual'],
             'limits' => ['donation_min' => 5000, 'donation_max' => 1000],
             'presets outside' => ['donation_presets' => '50'],
             'currency' => ['currency' => 'euro'],
@@ -131,7 +131,7 @@ final class SupportTest extends TestCase
 
     public function testAnUpdateKeepsWhatItDoesNotSend(): void
     {
-        $existing = ProjectFields::validate(self::body(), null);
+        $existing = ProjectFields::validate(self::body(['release_mode' => 'manual']), null);
         self::assertIsArray($existing);
         $update = ProjectFields::validate(['version' => '0.4.0-alpha'], $existing);
         self::assertIsArray($update);

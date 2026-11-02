@@ -3,7 +3,7 @@
   "description": "Open-source projects and donations (backend Module) for the TDS frontend API.",
   "type": "library",
   "license": "proprietary",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "require": {
     "php": ">=8.1",
     "slim/slim": "^4.13",
